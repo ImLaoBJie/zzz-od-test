@@ -5,7 +5,7 @@
 包含两类用例（互补）：
 - ``_mcp_with_backend`` + 直接 await/调用 ``Tool.fn``：覆盖 check/capture/analyze
   + close_game 工具的注册与行为（来自 understand-game 主仓归一）。
-- ``_mock_backend`` + ``app_mod.make_*`` 工厂：覆盖 open_and_enter_game/get_run_status
+- ``_mock_backend`` + ``app_mod.make_*`` 工厂：覆盖 open_game/get_run_status
   /stop_run 的委托与 block/nonblock/失败分支（来自 backend/run-status-schema）。
 """
 
@@ -16,8 +16,14 @@ from unittest.mock import MagicMock
 from one_dragon.base.operation.operation_base import OperationResult
 from zzz_od.backend.backend_context import BackendNotReadyError
 from zzz_od.backend.mcp import app as app_mod
+from zzz_od.backend.mcp import service_app as service_app_mod
 from zzz_od.backend.mcp.app import create_mcp_server
-from zzz_od.backend.schemas import AnalyzeScreenResult, RunStatusResult, WindowStatus
+from zzz_od.backend.schemas import (
+    AnalyzeScreenResult,
+    ApplicationListResult,
+    RunStatusResult,
+    WindowStatus,
+)
 
 
 def _mcp_with_backend() -> tuple[object, MagicMock]:
@@ -25,7 +31,7 @@ def _mcp_with_backend() -> tuple[object, MagicMock]:
 
     Returns:
         ``(mcp, backend)`` 元组：mcp 为注册了 6 个工具的 FastMCP 实例
-        （check/capture/analyze + open_and_enter_game/get_run_status/stop_run），
+        （check/capture/analyze + open_game/get_run_status/stop_run），
         backend 为 MagicMock，可在测试中配置其方法返回值或副作用。
     """
     backend = MagicMock()
@@ -58,10 +64,52 @@ def test_registers_all_tools() -> None:
         "check_game_window",
         "capture_game_screen",
         "analyze_screen",
-        "open_and_enter_game",
+        "open_game",
+        "run_one_dragon",
+        "run_standalone_app",
+        "list_applications",
         "get_run_status",
         "stop_run",
+        "list_mcp_usage_guides",
+        "get_mcp_usage_guide",
     } <= names
+
+
+def test_registers_prompts() -> None:
+    """create_mcp_server 应注册常用 MCP prompt。"""
+    mcp, _ = _mcp_with_backend()
+    prompts = asyncio.run(mcp.list_prompts())
+    names = {prompt.name for prompt in prompts}
+    assert {
+        "zzz_check_status",
+        "zzz_run_one_dragon",
+        "zzz_run_standalone_app",
+    } <= names
+
+
+def test_standalone_app_prompt_renders_app_id() -> None:
+    """独立应用 prompt 应能渲染调用参数。"""
+    mcp, _ = _mcp_with_backend()
+    result = asyncio.run(mcp.get_prompt("zzz_run_standalone_app", {"app_id": "coffee"}))
+    text = result.messages[0].content.text
+    assert "run_standalone_app(app_id='coffee', block=False)" in text
+    assert "get_run_status" in text
+
+
+def test_usage_guide_tools_expose_prompt_templates() -> None:
+    """帮助 tool 应暴露 prompt 模板目录和正文。"""
+    mcp, _ = _mcp_with_backend()
+
+    list_tool = mcp._tool_manager._tools["list_mcp_usage_guides"]
+    list_fn = getattr(list_tool, "fn", None) or getattr(list_tool, "func", None)
+    guides = list_fn()
+    assert any(item["name"] == "zzz_run_standalone_app" for item in guides)
+
+    get_tool = mcp._tool_manager._tools["get_mcp_usage_guide"]
+    get_fn = getattr(get_tool, "fn", None) or getattr(get_tool, "func", None)
+    guide = get_fn(name="zzz_run_standalone_app", app_id="coffee")
+    assert "run_standalone_app(app_id='coffee', block=False)" in guide
+    assert "list_applications" in guide
 
 
 def test_check_game_window_tool_error_on_not_ready() -> None:
@@ -166,39 +214,95 @@ def test_capture_game_screen_returns_path() -> None:
     assert path.endswith(".png")
 
 
-# ===== open_and_enter_game/get_run_status/stop_run 工厂委托 =====
+# ===== open_game/get_run_status/stop_run 工厂委托 =====
 
-def test_open_and_enter_game_nonblock_returns_started() -> None:
+def test_open_game_nonblock_returns_started() -> None:
     backend = _mock_backend()
-    tool = app_mod.make_open_and_enter_game(backend)
-    res = asyncio.run(tool(block=False))
+    tool = app_mod.make_open_game(backend)
+    res = asyncio.run(tool(enter=True, block=False))
     assert res['started'] is True
     backend.start_run.assert_called_once()
 
 
-def test_open_and_enter_game_concurrent_reject() -> None:
+def test_open_game_concurrent_reject() -> None:
     backend = _mock_backend(start_ok=False)
-    tool = app_mod.make_open_and_enter_game(backend)
-    res = asyncio.run(tool(block=False))
+    tool = app_mod.make_open_game(backend)
+    res = asyncio.run(tool(enter=True, block=False))
     assert res['started'] is False and 'source' in res
 
 
-def test_open_and_enter_game_block_success() -> None:
+def test_open_game_block_success() -> None:
     backend = _mock_backend()
     fut: Future = Future()
     fut.set_result(OperationResult(success=True, status='成功'))
     backend.start_run.return_value = (True, fut)
-    tool = app_mod.make_open_and_enter_game(backend)
-    assert asyncio.run(tool(block=True)) == '成功打开并进入绝区零游戏'
+    tool = app_mod.make_open_game(backend)
+    assert asyncio.run(tool(enter=True, block=True)) == '成功打开并进入绝区零游戏'
 
 
-def test_open_and_enter_game_block_failed() -> None:
+def test_open_game_block_failed() -> None:
     backend = _mock_backend()
     fut: Future = Future()
     fut.set_result(OperationResult(success=False, status='打开游戏失败'))
     backend.start_run.return_value = (True, fut)
-    tool = app_mod.make_open_and_enter_game(backend)
-    assert asyncio.run(tool(block=True)) == '打开游戏失败: 打开游戏失败'
+    tool = app_mod.make_open_game(backend)
+    assert asyncio.run(tool(enter=True, block=True)) == '打开游戏失败: 打开游戏失败'
+
+
+def test_run_one_dragon_nonblock_returns_started() -> None:
+    backend = _mock_backend()
+    backend.run_one_dragon.return_value = (True, Future())
+    tool = service_app_mod.make_run_one_dragon(backend)
+    res = asyncio.run(tool(block=False))
+    assert res['started'] is True
+    backend.run_one_dragon.assert_called_once_with('mcp')
+
+
+def test_run_one_dragon_concurrent_reject() -> None:
+    backend = _mock_backend()
+    backend.run_one_dragon.return_value = (False, None)
+    tool = service_app_mod.make_run_one_dragon(backend)
+    res = asyncio.run(tool(block=False))
+    assert res['started'] is False and 'source' in res
+
+
+def test_run_one_dragon_block_success() -> None:
+    backend = _mock_backend()
+    fut: Future = Future()
+    fut.set_result(OperationResult(success=True, status='成功'))
+    backend.run_one_dragon.return_value = (True, fut)
+    tool = service_app_mod.make_run_one_dragon(backend)
+    assert asyncio.run(tool(block=True)) == '一条龙运行成功'
+
+
+def test_run_standalone_app_nonblock_uses_app_id() -> None:
+    backend = _mock_backend()
+    backend.run_standalone_app.return_value = (True, Future())
+    tool = service_app_mod.make_run_standalone_app(backend)
+    res = asyncio.run(tool(app_id='coffee', block=False))
+    assert res['started'] is True
+    backend.run_standalone_app.assert_called_once_with('mcp', app_id='coffee')
+
+
+def test_run_standalone_app_block_failed() -> None:
+    backend = _mock_backend()
+    fut: Future = Future()
+    fut.set_result(OperationResult(success=False, status='失败'))
+    backend.run_standalone_app.return_value = (True, fut)
+    tool = service_app_mod.make_run_standalone_app(backend)
+    assert asyncio.run(tool(block=True)) == '独立应用运行失败: 失败'
+
+
+def test_list_applications_delegates() -> None:
+    backend = _mock_backend()
+    backend.list_applications.return_value = ApplicationListResult(
+        current_instance_idx=1,
+        active_standalone_app_id='coffee',
+        applications=[],
+    )
+    res = service_app_mod.make_list_applications(backend)()
+    assert isinstance(res, ApplicationListResult)
+    backend.list_applications.assert_called_once()
 
 
 def test_get_run_status_delegates() -> None:

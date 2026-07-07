@@ -3,6 +3,8 @@ from dataclasses import asdict, fields
 from one_dragon.base.screen.screen_match import AreaMatchDetail, AreaType, ScreenMatch
 from zzz_od.backend.schemas import (
     AnalyzeScreenResult,
+    ApplicationInfo,
+    ApplicationListResult,
     OcrText,
     RunStatusResult,
     WindowStatus,
@@ -67,3 +69,21 @@ def test_run_status_result_defaults() -> None:
     r = RunStatusResult(state='idle')
     assert r.source is None and r.app is None
     assert r.current_node is None and r.last_status is None and r.failed_node is None
+
+
+def test_application_info_defaults() -> None:
+    app = ApplicationInfo(app_id='coffee', app_name='咖啡')
+    assert app.enabled_in_one_dragon is False
+    assert app.in_standalone_list is False
+    assert app.is_active_standalone is False
+
+
+def test_application_list_result_fields() -> None:
+    result = ApplicationListResult(
+        current_instance_idx=1,
+        active_standalone_app_id='coffee',
+        applications=[ApplicationInfo(app_id='coffee', app_name='咖啡')],
+    )
+    assert result.current_instance_idx == 1
+    assert result.active_standalone_app_id == 'coffee'
+    assert result.applications[0].app_id == 'coffee'

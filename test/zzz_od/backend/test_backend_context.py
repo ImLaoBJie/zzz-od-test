@@ -3,10 +3,13 @@
 测试使用 MagicMock 伪造 ZContext，避免触发真实的 onnx 模型加载。
 """
 
+from concurrent.futures import Future
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+from one_dragon.base.operation.application import application_const
 from zzz_od.backend.backend_context import BackendNotReadyError, ZzzBackendContext
 
 
@@ -24,6 +27,30 @@ def _backend(ready: bool = True, controller: MagicMock | None = None) -> ZzzBack
     ctx.ready_for_application = ready
     ctx.controller = controller
     return ZzzBackendContext(ctx)
+
+
+class _RuntimeCtx:
+    """用于验证运行前配置刷新逻辑的轻量 ZContext 替身。"""
+
+    def __init__(self) -> None:
+        self.ready_for_application: bool = True
+        self.current_instance_idx: int = 1
+        self.controller: None = None
+        self.standalone_app_config: SimpleNamespace = SimpleNamespace(
+            active_app_id='charge_plan',
+            app_list=['charge_plan'],
+        )
+        self.run_context: MagicMock = MagicMock()
+        self.app_group_manager: MagicMock = MagicMock()
+        self.reload_instance_config: MagicMock = MagicMock()
+        self.on_switch_instance: MagicMock = MagicMock()
+        self._one_dragon_config: SimpleNamespace = SimpleNamespace(
+            current_active_instance=SimpleNamespace(idx=1)
+        )
+
+    @property
+    def one_dragon_config(self) -> SimpleNamespace:
+        return self._one_dragon_config
 
 
 @pytest.mark.asyncio
@@ -179,19 +206,19 @@ def test_analyze_exception_no_writeback(monkeypatch) -> None:
     backend.ctx.screen_loader.update_current_screen_name.assert_not_called()
 
 
-def test_start_run_delegates_to_run_slot() -> None:
-    """start_run 应委托 run_slot._start_run，返回 (ok, future) 元组。
+def test_start_run_delegates_to_basic_run_slot() -> None:
+    """start_run 应委托 basic_run_slot._start_run，返回 (ok, future) 元组。
 
     覆盖旧的 enter_game 用例：不再有同步 enter_game 方法，运行由
-    run_slot 异步派发；此处直接 mock run_slot，验证透传与返回结构。
+    basic_run_slot 异步派发；此处直接 mock basic_run_slot，验证透传与返回结构。
     """
     from concurrent.futures import Future
 
     backend = _backend(ready=True)
     fut: Future = Future()
     fut.set_result(object())
-    backend.run_slot = MagicMock()
-    backend.run_slot._start_run.return_value = (True, fut)
+    backend.basic_run_slot = MagicMock()
+    backend.basic_run_slot._start_run.return_value = (True, fut)
 
     def _factory(_ctx: object) -> object:
         return object()
@@ -199,31 +226,31 @@ def test_start_run_delegates_to_run_slot() -> None:
     ok, future = backend.start_run("mcp", _factory)
     assert ok is True
     assert future is fut
-    backend.run_slot._start_run.assert_called_once_with("mcp", _factory)
+    backend.basic_run_slot._start_run.assert_called_once_with("mcp", _factory)
 
 
-def test_query_status_delegates_to_run_slot() -> None:
-    """query_status 应委托 run_slot._query_status 返回 RunStatusResult。"""
+def test_query_status_delegates_to_basic_run_slot() -> None:
+    """query_status 应委托 basic_run_slot._query_status 返回 RunStatusResult。"""
     from zzz_od.backend.schemas import RunStatusResult
 
     expected = RunStatusResult(state="idle", source=None, app=None,
                                started_at=None, duration_seconds=None)
     backend = _backend(ready=True)
-    backend.run_slot = MagicMock()
-    backend.run_slot._query_status.return_value = expected
+    backend.basic_run_slot = MagicMock()
+    backend.basic_run_slot._query_status.return_value = expected
 
     assert backend.query_status() is expected
-    backend.run_slot._query_status.assert_called_once()
+    backend.basic_run_slot._query_status.assert_called_once()
 
 
-def test_stop_delegates_to_run_slot() -> None:
-    """stop 应封装 run_slot._stop，无运行时返回 {stopped: False, error}。"""
+def test_stop_delegates_to_basic_run_slot() -> None:
+    """stop 应封装 basic_run_slot._stop，无运行时返回 {stopped: False, error}。"""
     backend = _backend(ready=True)
-    backend.run_slot = MagicMock()
-    backend.run_slot._stop.return_value = (False, None)
+    backend.basic_run_slot = MagicMock()
+    backend.basic_run_slot._stop.return_value = (False, None)
 
     assert backend.stop() == {"stopped": False, "error": "当前无运行"}
-    backend.run_slot._stop.assert_called_once()
+    backend.basic_run_slot._stop.assert_called_once()
 
 
 def test_close_game_delegates() -> None:
@@ -235,3 +262,53 @@ def test_close_game_delegates() -> None:
     msg = backend.close_game()
     controller.close_game.assert_called_once()
     assert msg == '已发送关闭游戏信号,可用 check_game_window 验证'
+
+
+def test_run_standalone_app_refreshes_runtime_config() -> None:
+    """启动独立应用前应刷新 YAML 配置和应用工厂缓存。"""
+    ctx = _RuntimeCtx()
+    backend = ZzzBackendContext(ctx)  # type: ignore[arg-type]
+    backend.basic_run_slot = MagicMock()
+    backend.basic_run_slot.is_running.return_value = False
+    backend.app_run_slot = MagicMock()
+    fut: Future = Future()
+    backend.app_run_slot._start_application.return_value = (True, fut)
+
+    ok, future = backend.run_standalone_app('mcp')
+
+    assert ok is True
+    assert future is fut
+    ctx.reload_instance_config.assert_called_once()
+    ctx.on_switch_instance.assert_not_called()
+    ctx.run_context.clear_application_cache.assert_called_once()
+    ctx.app_group_manager.clear_config_cache.assert_called_once()
+    backend.app_run_slot._start_application.assert_called_once_with(
+        source='mcp',
+        app_id='charge_plan',
+        instance_idx=1,
+        group_id=application_const.DEFAULT_GROUP_ID,
+    )
+
+
+def test_run_standalone_app_switches_active_instance_before_start() -> None:
+    """当前启用实例变化时，应先切换实例再启动应用。"""
+    ctx = _RuntimeCtx()
+    ctx.current_instance_idx = 1
+    ctx._one_dragon_config.current_active_instance = SimpleNamespace(idx=2)
+    backend = ZzzBackendContext(ctx)  # type: ignore[arg-type]
+    backend.basic_run_slot = MagicMock()
+    backend.basic_run_slot.is_running.return_value = False
+    backend.app_run_slot = MagicMock()
+    backend.app_run_slot._start_application.return_value = (True, Future())
+
+    backend.run_standalone_app('mcp', app_id='coffee')
+
+    assert ctx.current_instance_idx == 2
+    ctx.reload_instance_config.assert_called_once()
+    ctx.on_switch_instance.assert_called_once()
+    backend.app_run_slot._start_application.assert_called_once_with(
+        source='mcp',
+        app_id='coffee',
+        instance_idx=2,
+        group_id=application_const.DEFAULT_GROUP_ID,
+    )

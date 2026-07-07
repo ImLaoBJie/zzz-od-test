@@ -27,7 +27,18 @@ from zzz_od.backend.http.routes import (
     handle_game_enter,
     handle_game_window,
 )
-from zzz_od.backend.schemas import AnalyzeScreenResult, RunStatusResult, WindowStatus
+from zzz_od.backend.http.service_routes import (
+    handle_game_applications,
+    handle_game_run_one_dragon,
+    handle_game_run_standalone,
+    handle_health,
+)
+from zzz_od.backend.schemas import (
+    AnalyzeScreenResult,
+    ApplicationListResult,
+    RunStatusResult,
+    WindowStatus,
+)
 
 
 @dataclass
@@ -42,6 +53,13 @@ def _mock_backend(start_ok: bool = True) -> MagicMock:
     """构造 mock ZzzBackendContext:start_run 返回 (start_ok, Future)。"""
     b = MagicMock(name='ZzzBackendContext')
     b.start_run.return_value = (start_ok, Future())
+    b.run_one_dragon.return_value = (start_ok, Future())
+    b.run_standalone_app.return_value = (start_ok, Future())
+    b.list_applications.return_value = ApplicationListResult(
+        current_instance_idx=1,
+        active_standalone_app_id='coffee',
+        applications=[],
+    )
     b.query_status.return_value = RunStatusResult(
         state='running',
         source='http',
@@ -157,6 +175,52 @@ async def test_handle_game_enter_ok() -> None:
     backend.start_run.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_handle_health_ok() -> None:
+    backend = MagicMock()
+    backend.ctx.ready_for_application = True
+    resp = await handle_health(backend)
+    assert resp.status_code == 200
+    data = json.loads(resp.body.decode("utf-8"))
+    assert data["ok"] is True
+    assert data["server"] == "zzz_od"
+    assert data["ready"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_game_applications_ok() -> None:
+    backend = _mock_backend()
+    resp = await handle_game_applications(backend)
+    assert resp.status_code == 200
+    data = json.loads(resp.body.decode("utf-8"))
+    assert data["current_instance_idx"] == 1
+    backend.list_applications.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_game_run_one_dragon_nonblock() -> None:
+    backend = _mock_backend()
+    resp = await handle_game_run_one_dragon(backend, _FakeRequest({'block': 'false'}))
+    assert resp.status_code == 200
+    data = json.loads(resp.body.decode("utf-8"))
+    assert data["started"] is True
+    backend.run_one_dragon.assert_called_once_with('http')
+
+
+@pytest.mark.asyncio
+async def test_handle_game_run_standalone_uses_body_app_id() -> None:
+    class _BodyRequest(_FakeRequest):
+        async def json(self) -> dict:
+            return {'app_id': 'coffee'}
+
+    backend = _mock_backend()
+    resp = await handle_game_run_standalone(backend, _BodyRequest({}))
+    assert resp.status_code == 200
+    data = json.loads(resp.body.decode("utf-8"))
+    assert data["started"] is True
+    backend.run_standalone_app.assert_called_once_with('http', app_id='coffee')
+
+
 def test_register_http_routes_adds_custom_routes() -> None:
     """register_http_routes 应在 FastMCP 上挂载 /game/* 路由。"""
     from mcp.server.fastmcp import FastMCP
@@ -169,6 +233,12 @@ def test_register_http_routes_adds_custom_routes() -> None:
     app = mcp.streamable_http_app()
     paths = {getattr(r, "path", None) for r in app.routes}
     assert any(p and "game" in p for p in paths)
+    assert {
+        "/health",
+        "/game/applications",
+        "/game/run/one-dragon",
+        "/game/run/standalone",
+    } <= paths
 
 
 @pytest.mark.asyncio

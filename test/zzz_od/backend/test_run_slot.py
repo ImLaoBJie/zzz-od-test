@@ -3,7 +3,7 @@ import time
 from unittest.mock import MagicMock
 
 from one_dragon.base.operation.operation_base import OperationResult
-from zzz_od.backend.backend_context import RunState
+from zzz_od.backend.backend_context import ApplicationRunSlot, RunState
 from zzz_od.backend.schemas import RunStatusResult
 
 
@@ -151,30 +151,68 @@ def test_stop_running_signals_stop(slot, mock_ctx):
 
 
 def test_context_start_run_delegates(slot, mock_ctx):
-    """ZzzBackendContext.start_run 转发 run_slot._start_run,返回 (ok, future)。"""
+    """ZzzBackendContext.start_run 转发 basic_run_slot._start_run,返回 (ok, future)。"""
     from zzz_od.backend.backend_context import ZzzBackendContext
 
     backend = ZzzBackendContext(mock_ctx)
-    backend.run_slot = slot
-    event = threading.Event(); event.set()
+    backend.basic_run_slot = slot
+    event = threading.Event()
+    event.set()
     ok, fut = backend.start_run('mcp', _make_op(OperationResult(success=True)))
     assert ok is True and fut is not None
     fut.result(timeout=5)
 
 
 def test_context_query_status_delegates(slot, mock_ctx):
-    """ZzzBackendContext.query_status 转发 run_slot._query_status。"""
+    """ZzzBackendContext.query_status 转发 basic_run_slot._query_status。"""
     from zzz_od.backend.backend_context import ZzzBackendContext
 
     backend = ZzzBackendContext(mock_ctx)
-    backend.run_slot = slot
+    backend.basic_run_slot = slot
     assert backend.query_status().state == 'idle'
 
 
 def test_context_stop_delegates(slot, mock_ctx):
-    """ZzzBackendContext.stop 封装 run_slot._stop,无运行时返 {stopped:False, error}。"""
+    """ZzzBackendContext.stop 封装 basic_run_slot._stop,无运行时返 {stopped:False, error}。"""
     from zzz_od.backend.backend_context import ZzzBackendContext
 
     backend = ZzzBackendContext(mock_ctx)
-    backend.run_slot = slot
+    backend.basic_run_slot = slot
     assert backend.stop() == {'stopped': False, 'error': '当前无运行'}
+
+
+def test_application_run_slot_delegates_to_run_context(mock_ctx):
+    """ApplicationRunSlot 应复用 run_context.run_application,避免复制 GUI 运行路径。"""
+    mock_ctx.ready_for_application = True
+    mock_ctx.run_context.is_app_registered.return_value = True
+    mock_ctx.run_context.get_application_name.return_value = '体力刷本'
+    mock_ctx.run_context.run_application.return_value = True
+    mock_ctx.run_context.last_application_result = OperationResult(success=True, status='完成')
+    slot = ApplicationRunSlot(mock_ctx)
+
+    ok, fut = slot._start_application('mcp', 'charge_plan', 1, 'default')
+    assert ok is True and fut is not None
+    result = fut.result(timeout=5)
+
+    assert result.success is True
+    assert slot.terminal_state == RunState.SUCCESS
+    assert slot.last_status == '完成'
+    assert slot.app == '体力刷本'
+    mock_ctx.run_context.run_application.assert_called_once_with('charge_plan', 1, 'default')
+
+
+def test_application_run_slot_failed_result(mock_ctx):
+    """ApplicationRunSlot 应使用 run_context.last_application_result 固化失败状态。"""
+    mock_ctx.ready_for_application = True
+    mock_ctx.run_context.is_app_registered.return_value = True
+    mock_ctx.run_context.get_application_name.return_value = '体力刷本'
+    mock_ctx.run_context.run_application.return_value = True
+    mock_ctx.run_context.last_application_result = OperationResult(success=False, status='副本失败')
+    slot = ApplicationRunSlot(mock_ctx)
+
+    _, fut = slot._start_application('mcp', 'charge_plan', 1, 'default')
+    fut.result(timeout=5)
+
+    assert slot.terminal_state == RunState.FAILED
+    assert slot.last_status == '副本失败'
+    assert slot.failed_node == '副本失败'
