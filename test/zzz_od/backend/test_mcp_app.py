@@ -305,6 +305,13 @@ def test_list_applications_delegates() -> None:
     backend.list_applications.assert_called_once()
 
 
+def test_list_applications_returns_structured_error() -> None:
+    backend = _mock_backend()
+    backend.list_applications.side_effect = RuntimeError('backend not ready')
+    res = service_app_mod.make_list_applications(backend)()
+    assert res == {'error': 'backend not ready'}
+
+
 def test_get_run_status_delegates() -> None:
     backend = _mock_backend()
     res = app_mod.make_get_run_status(backend)()
