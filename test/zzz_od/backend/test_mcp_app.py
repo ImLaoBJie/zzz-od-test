@@ -24,7 +24,7 @@ def _mcp_with_backend() -> tuple[object, MagicMock]:
     """构造一个 MCP 服务器与对应的伪造 backend。
 
     Returns:
-        ``(mcp, backend)`` 元组：mcp 为注册了全部 game 工具的 FastMCP 实例
+        ``(mcp, backend)`` 元组：mcp 为注册了全部 game 工具的 MCPServer 实例
         （check/capture/analyze + close_game/click_game/input_text
         + open_game/get_run_status/stop_run），
         backend 为 MagicMock，可在测试中配置其方法返回值或副作用。
@@ -80,7 +80,7 @@ def test_check_game_window_tool_error_on_not_ready() -> None:
     mcp, backend = _mcp_with_backend()
     backend.check_window.side_effect = BackendNotReadyError("未就绪")
     tool = mcp._tool_manager._tools["check_game_window"]
-    # FastMCP 工具实际可调用对象在 .fn / .func；按版本取能 call 的那个
+    # MCPServer 工具实际可调用对象在 .fn / .func；按版本取能 call 的那个
     fn = getattr(tool, "fn", None) or getattr(tool, "func", None)
     assert fn is not None
     out = fn()
@@ -101,7 +101,7 @@ def test_analyze_tool_returns_result() -> None:
 def test_analyze_screen_tool_returns_screens_field() -> None:
     """analyze_screen tool 直接调用应返回带 screens 的 AnalyzeScreenResult(验证嵌套结构)。
 
-    MCP 经 FastMCP/pydantic 的 JSON 序列化由框架保证(与 HTTP 同源 dataclass);
+    MCP 经 MCPServer/pydantic 的 JSON 序列化由框架保证(与 HTTP 同源 dataclass);
     端到端 JSON 序列化(area_type → 'text')由 HTTP 测试覆盖。此处验证 tool.fn
     返回的 dataclass 结构正确。
     """
@@ -155,16 +155,23 @@ def test_tool_annotations_marked() -> None:
     mcp, _ = _mcp_with_backend()
     tools = mcp._tool_manager._tools
     # 观察类(只读)
-    assert tools["check_game_window"].annotations.readOnlyHint is True
-    assert tools["analyze_screen"].annotations.readOnlyHint is True
-    assert tools["get_run_status"].annotations.readOnlyHint is True
-    assert tools["list_applications"].annotations.readOnlyHint is True
+    assert tools["check_game_window"].annotations.read_only_hint is True
+    assert tools["analyze_screen"].annotations.read_only_hint is True
+    assert tools["get_run_status"].annotations.read_only_hint is True
+    assert tools["list_applications"].annotations.read_only_hint is True
     # 破坏性(不可逆)
-    assert tools["close_game"].annotations.destructiveHint is True
-    assert tools["delete_screen_area"].annotations.destructiveHint is True
+    assert tools["close_game"].annotations.destructive_hint is True
+    assert tools["delete_screen_area"].annotations.destructive_hint is True
     # 操作类(非破坏)不标 read_only
     click_ann = tools["click_game"].annotations
-    assert click_ann is None or click_ann.readOnlyHint is None
+    assert click_ann is None or click_ann.read_only_hint is None
+
+    # Python 层使用 snake_case，MCP 协议层仍必须输出 camelCase。
+    wire = tools["check_game_window"].annotations.model_dump(
+        by_alias=True,
+        exclude_none=True,
+    )
+    assert wire['readOnlyHint'] is True
 
 
 def test_get_predefined_teams_tool_registered() -> None:
@@ -172,7 +179,7 @@ def test_get_predefined_teams_tool_registered() -> None:
     mcp, _ = _mcp_with_backend()
     tools = asyncio.run(mcp.list_tools())
     assert any(t.name == "get_predefined_teams" for t in tools)
-    assert mcp._tool_manager._tools["get_predefined_teams"].annotations.readOnlyHint is True
+    assert mcp._tool_manager._tools["get_predefined_teams"].annotations.read_only_hint is True
 
 
 def test_get_predefined_teams_tool_delegates() -> None:

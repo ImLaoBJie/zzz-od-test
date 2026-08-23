@@ -397,7 +397,7 @@ def test_add_config_item_empty_mission_type_category_rejects_non_empty():
 def test_delete_config_item_no_alias_on_item_id():
     """delete_config_item 的 item_id 参数不带 alias(commit 3d240da2)。
 
-    修复前 alias='id'(FastMCP 不桥接 alias)→ delete 经 MCP 完全不可用。
+    修复前 alias='id'(MCPServer 不桥接 alias)→ delete 经 MCP 完全不可用。
     这是注册层的 bug(单测直接调函数碰不到),这里查参数注解的 Field.alias 兜底回归。
     """
     import inspect

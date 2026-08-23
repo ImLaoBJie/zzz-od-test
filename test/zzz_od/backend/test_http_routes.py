@@ -184,12 +184,12 @@ async def test_handle_game_enter_ok() -> None:
 
 
 def test_register_http_routes_adds_custom_routes() -> None:
-    """register_http_routes 应在 FastMCP 上挂载 /game/* 路由。"""
-    from mcp.server.fastmcp import FastMCP
+    """register_http_routes 应在 MCPServer 上挂载 /game/* 路由。"""
+    from mcp.server import MCPServer
 
     from zzz_od.backend.http.routes import register_http_routes
 
-    mcp = FastMCP("test")
+    mcp = MCPServer("test")
     register_http_routes(mcp, MagicMock())
     # custom_route 挂在 Starlette 层；用 streamable_http_app 的 routes 校验
     app = mcp.streamable_http_app()
@@ -219,12 +219,12 @@ async def test_handle_game_close_error() -> None:
 
 def test_route_dispatch_game_close_ok() -> None:
     """经路由层分发 POST /game/close,应返回 200 + result 文本。"""
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
     from starlette.testclient import TestClient
 
     from zzz_od.backend.http.routes import register_http_routes
 
-    mcp = FastMCP("test")
+    mcp = MCPServer("test")
     backend = MagicMock()
     backend.close_game.return_value = "已发送关闭游戏信号,可用 check_game_window 验证"
     register_http_routes(mcp, backend)
@@ -240,12 +240,12 @@ def test_route_dispatch_window_ok() -> None:
     回归 ``register_http_routes`` 中同步 lambda 返回 coroutine 的 bug：
     处理器未走真实路由分发，上面几个直调 ``handle_*`` 的用例无法覆盖。
     """
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
     from starlette.testclient import TestClient
 
     from zzz_od.backend.http.routes import register_http_routes
 
-    mcp = FastMCP("test")
+    mcp = MCPServer("test")
     backend = MagicMock()
     backend.check_window.return_value = WindowStatus(
         win_title="绝区零", is_win_valid=True, is_win_active=False, is_win_scale=True
@@ -259,13 +259,13 @@ def test_route_dispatch_window_ok() -> None:
 
 def test_route_dispatch_predefined_teams_ok() -> None:
     """GET /game/predefined-teams 返回 200 + 编队列表 JSON(含单队字段序列化)。"""
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
     from starlette.testclient import TestClient
 
     from zzz_od.backend.http.routes import register_http_routes
     from zzz_od.backend.schemas import PredefinedTeamItem, PredefinedTeamListResult
 
-    mcp = FastMCP("test")
+    mcp = MCPServer("test")
     backend = MagicMock()
     backend.list_predefined_teams.return_value = PredefinedTeamListResult(
         current_instance_idx=1,
@@ -288,12 +288,12 @@ def test_route_dispatch_predefined_teams_ok() -> None:
 
 def test_route_dispatch_window_not_ready() -> None:
     """经路由层分发，backend 未就绪时应返回 503（而非 500）。"""
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
     from starlette.testclient import TestClient
 
     from zzz_od.backend.http.routes import register_http_routes
 
-    mcp = FastMCP("test")
+    mcp = MCPServer("test")
     backend = MagicMock()
     backend.check_window.side_effect = BackendNotReadyError("未就绪")
     register_http_routes(mcp, backend)
@@ -453,11 +453,11 @@ def test_handle_game_run_operation_concurrent_reject() -> None:
 
 def test_register_service_routes_adds_operation_routes() -> None:
     """register_http_routes 应挂载 /game/operations 系列端点。"""
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
 
     from zzz_od.backend.http.routes import register_http_routes
 
-    mcp = FastMCP('test')
+    mcp = MCPServer('test')
     register_http_routes(mcp, MagicMock())
     app = mcp.streamable_http_app()
     paths = {getattr(r, 'path', None) for r in app.routes}
